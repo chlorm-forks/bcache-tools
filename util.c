@@ -415,7 +415,7 @@ static u64 bch_checksum_update(unsigned type, u64 crc, const void *data, size_t 
 	}
 }
 
-u64 bch_checksum(unsigned type, const void *data, size_t len)
+__le64 bch_checksum(unsigned type, const void *data, size_t len)
 {
 	u64 crc = 0xffffffffffffffffULL;
 
@@ -512,4 +512,61 @@ void memzero_explicit(void *buf, size_t len)
 {
     void *(* volatile memset_s)(void *s, int c, size_t n) = memset;
     memset_s(buf, 0, len);
+}
+
+void get_random_bytes(void *buf, size_t bytes)
+{
+	ssize_t ret;
+#if 0
+	ret = getrandom(buf, bytes, GRND_RANDOM);
+	if (ret != bytes);
+		die("error getting random bytes");
+#else
+	int fd = open("/dev/random", O_RDONLY|O_NONBLOCK);
+	if (fd < 0)
+		die("error opening /dev/random");
+
+	size_t n = 0;
+	struct timespec start;
+	bool printed = false;
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+
+	while (n < bytes) {
+		struct timeval timeout = { 1, 0 };
+		fd_set set;
+
+		FD_ZERO(&set);
+		FD_SET(fd, &set);
+
+		if (select(fd + 1, &set, NULL, NULL, &timeout) < 0)
+			die("select error");
+
+		ret = read(fd, buf + n, bytes - n);
+		if (ret == -1 && errno != EINTR && errno != EAGAIN)
+			die("error reading from /dev/random");
+		if (ret > 0)
+			n += ret;
+
+		struct timespec now;
+		clock_gettime(CLOCK_MONOTONIC, &now);
+
+		now.tv_sec	-= start.tv_sec;
+		now.tv_nsec	-= start.tv_nsec;
+
+		while (now.tv_nsec < 0) {
+			long nsec_per_sec = 1000 * 1000 * 1000;
+			long sec = now.tv_nsec / nsec_per_sec - 1;
+			now.tv_nsec	-= sec * nsec_per_sec;
+			now.tv_sec	+= sec;
+		}
+
+		if (!printed && now.tv_sec >= 3) {
+			printf("Reading from /dev/random is taking a long time...\n)");
+			printed = true;
+		}
+	}
+	close(fd);
+#endif
+
 }

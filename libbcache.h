@@ -2,6 +2,7 @@
 #define _LIBBCACHE_H
 
 #include "util.h"
+#include "vstructs.h"
 #include "stdbool.h"
 
 extern const char * const cache_state[];
@@ -38,8 +39,19 @@ void bcache_format(struct dev_opts *devs, size_t nr_devs,
 		   char *label,
 		   uuid_le uuid);
 
-void bcache_super_print(struct cache_sb *, int);
+struct bch_sb *bcache_super_read(const char *);
 
-struct cache_sb *bcache_super_read(const char *);
+void bcache_super_print(struct bch_sb *, int);
+
+static inline struct bch_sb_field *bch_sb_field_get(struct bch_sb *sb,
+						enum bch_sb_field_types type)
+{
+	struct bch_sb_field *f;
+
+	vstruct_for_each(sb, f)
+		if (le32_to_cpu(f->type) == type)
+			return f;
+	return NULL;
+}
 
 #endif /* _LIBBCACHE_H */

@@ -12,13 +12,13 @@ struct bcache_disk_key {
 	u64	key[4];
 };
 
-static const char bch_key_header[8]		= BCACHE_MASTER_KEY_HEADER;
-static const struct nonce bch_master_key_nonce	= BCACHE_MASTER_KEY_NONCE;
-
+bool disk_key_is_encrypted(struct bcache_disk_key *);
 char *read_passphrase(const char *);
-void derive_passphrase(struct bcache_key *, const char *);
-void disk_key_encrypt(struct cache_sb *sb, struct bcache_disk_key *,
+void derive_passphrase(struct bch_sb_field_crypt *,
+		       struct bcache_key *, const char *);
+void disk_key_encrypt(struct bch_sb *sb, struct bcache_disk_key *,
 		      struct bcache_key *);
-void disk_key_init(struct bcache_disk_key *);
+void bcache_crypt_init(struct bch_sb *sb, struct bch_sb_field_crypt *,
+		       const char *);
 
 #endif /* _CRYPTO_H */

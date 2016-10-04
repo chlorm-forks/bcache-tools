@@ -11,6 +11,10 @@
 #include <asm/types.h>
 #include <asm/byteorder.h>
 
+#define type_is(_val, _type)						\
+	(__builtin_types_compatible_p(typeof(_val), _type) ||		\
+	 __builtin_types_compatible_p(typeof(_val), const _type))
+
 typedef __u8	u8;
 typedef __u16	u16;
 typedef __u32	u32;
@@ -102,7 +106,7 @@ unsigned get_blocksize(const char *, int);
 #include "bcache-ondisk.h"
 #include "bcache-ioctl.h"
 
-u64 bch_checksum(unsigned, const void *, size_t);
+__le64 bch_checksum(unsigned, const void *, size_t);
 
 #define __bkey_idx(_set, _offset)					\
 	((_set)->_data + (_offset))
@@ -110,12 +114,12 @@ u64 bch_checksum(unsigned, const void *, size_t);
 #define __bset_bkey_last(_set)						\
 	 __bkey_idx((_set), (_set)->u64s)
 
-#define __csum_set(i, u64s, type)					\
+#define csum_vstruct(_type, _i)						\
 ({									\
-	const void *start = ((const void *) (i)) + sizeof(i->csum);	\
-	const void *end = __bkey_idx(i, u64s);				\
+	const void *start = ((const void *) (_i)) + sizeof((_i)->csum);	\
+	const void *end = vstruct_end(_i);				\
 									\
-	bch_checksum(type, start, end - start);				\
+	bch_checksum(_type, start, end - start);			\
 })
 
 #define csum_set(i, type)	__csum_set(i, (i)->u64s, type)
@@ -134,5 +138,7 @@ struct bcache_handle bcache_fs_open(const char *);
 bool ask_proceed(void);
 
 void memzero_explicit(void *, size_t);
+
+void get_random_bytes(void *, size_t);
 
 #endif /* _UTIL_H */

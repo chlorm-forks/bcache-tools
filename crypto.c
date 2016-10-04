@@ -16,52 +16,82 @@
 
 #include "crypto.h"
 
+static const char bch_key_header[8]		= BCACHE_MASTER_KEY_HEADER;
+
+bool disk_key_is_encrypted(struct bcache_disk_key *key)
+{
+	return memcmp(&key->header, bch_key_header, sizeof(bch_key_header));
+}
+
 char *read_passphrase(const char *prompt)
 {
-	struct termios old, new;
 	char *buf = NULL;
 	size_t buflen = 0;
+	ssize_t len;
 
-	fprintf(stderr, "%s", prompt);
-	fflush(stderr);
+	if (isatty(STDIN_FILENO)) {
+		struct termios old, new;
 
-	if (tcgetattr(fileno(stdin), &old))
-		die("error getting terminal attrs");
+		fprintf(stderr, "%s", prompt);
+		fflush(stderr);
 
-	new = old;
-	new.c_lflag &= ~ECHO;
-	if (tcsetattr(fileno(stdin), TCSAFLUSH, &new))
-		die("error setting terminal attrs");
+		if (tcgetattr(STDIN_FILENO, &old))
+			die("error getting terminal attrs");
 
-	if (getline(&buf, &buflen, stdin) <= 0)
+		new = old;
+		new.c_lflag &= ~ECHO;
+		if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &new))
+			die("error setting terminal attrs");
+
+		len = getline(&buf, &buflen, stdin);
+
+		tcsetattr(STDIN_FILENO, TCSAFLUSH, &old);
+		fprintf(stderr, "\n");
+	} else {
+		len = getline(&buf, &buflen, stdin);
+	}
+
+	if (len < 0)
 		die("error reading passphrase");
+	if (len && buf[len - 1] == '\n')
+		buf[len - 1] = '\0';
 
-	tcsetattr(fileno(stdin), TCSAFLUSH, &old);
-	fprintf(stderr, "\n");
 	return buf;
 }
 
-void derive_passphrase(struct bcache_key *key, const char *passphrase)
+void derive_passphrase(struct bch_sb_field_crypt *crypt,
+		       struct bcache_key *key,
+		       const char *passphrase)
 {
 	const unsigned char salt[] = "bcache";
 	int ret;
 
-	ret = libscrypt_scrypt((void *) passphrase, strlen(passphrase),
-			       salt, sizeof(salt),
-			       SCRYPT_N, SCRYPT_r, SCRYPT_p,
-			       (void *) key, sizeof(*key));
-	if (ret)
-		die("scrypt error: %i", ret);
+	switch (BCH_CRYPT_KDF_TYPE(crypt)) {
+	case BCH_KDF_SCRYPT:
+		ret = libscrypt_scrypt((void *) passphrase, strlen(passphrase),
+				       salt, sizeof(salt),
+				       1ULL << BCH_KDF_SCRYPT_N(crypt),
+				       1ULL << BCH_KDF_SCRYPT_R(crypt),
+				       1ULL << BCH_KDF_SCRYPT_P(crypt),
+				       (void *) key, sizeof(*key));
+		if (ret)
+			die("scrypt error: %i", ret);
+		break;
+	default:
+		die("unknown kdf type %llu", BCH_CRYPT_KDF_TYPE(crypt));
+	}
+
 }
 
-void disk_key_encrypt(struct cache_sb *sb,
+void disk_key_encrypt(struct bch_sb *sb,
 		      struct bcache_disk_key *disk_key,
 		      struct bcache_key *key)
 {
+	__le64 magic = __bch_sb_magic(sb);
 	__le32 nonce[2];
 	int ret;
 
-	memcpy(nonce, &sb->set_magic, sizeof(sb->set_magic));
+	memcpy(nonce, &magic, sizeof(magic));
 
 	ret = crypto_stream_chacha20_xor((void *) disk_key,
 					 (void *) disk_key, sizeof(*disk_key),
@@ -71,62 +101,28 @@ void disk_key_encrypt(struct cache_sb *sb,
 		die("chacha20 error: %i", ret);
 }
 
-void disk_key_init(struct bcache_disk_key *disk_key)
+void bcache_crypt_init(struct bch_sb *sb,
+		       struct bch_sb_field_crypt *crypt,
+		       const char *passphrase)
 {
-	ssize_t ret;
+	struct bcache_key key;
+	struct bcache_disk_key disk_key;
 
-	memcpy(&disk_key->header, bch_key_header, sizeof(bch_key_header));
-#if 0
-	ret = getrandom(disk_key->key, sizeof(disk_key->key), GRND_RANDOM);
-	if (ret != sizeof(disk_key->key))
-		die("error getting random bytes for key");
-#else
-	int fd = open("/dev/random", O_RDONLY|O_NONBLOCK);
-	if (fd < 0)
-		die("error opening /dev/random");
+	SET_BCH_CRYPT_KDF_TYPE(crypt, BCH_KDF_SCRYPT);
+	SET_BCH_KDF_SCRYPT_N(crypt, ilog2(SCRYPT_N));
+	SET_BCH_KDF_SCRYPT_R(crypt, ilog2(SCRYPT_r));
+	SET_BCH_KDF_SCRYPT_P(crypt, ilog2(SCRYPT_p));
 
-	size_t n = 0;
-	struct timespec start;
-	bool printed = false;
+	derive_passphrase(crypt, &key, passphrase);
 
-	clock_gettime(CLOCK_MONOTONIC, &start);
+	memcpy(&disk_key.header, bch_key_header, sizeof(bch_key_header));
 
-	while (n < sizeof(disk_key->key)) {
-		struct timeval timeout = { 1, 0 };
-		fd_set set;
+	get_random_bytes(disk_key.key, sizeof(disk_key.key));
+	disk_key_encrypt(sb, &disk_key, &key);
 
-		FD_ZERO(&set);
-		FD_SET(fd, &set);
+	memcpy(crypt->encryption_key, &disk_key,
+	       sizeof(crypt->encryption_key));
 
-		if (select(fd + 1, &set, NULL, NULL, &timeout) < 0)
-			die("select error");
-
-		ret = read(fd,
-			   (void *) disk_key->key + n,
-			   sizeof(disk_key->key) - n);
-		if (ret == -1 && errno != EINTR && errno != EAGAIN)
-			die("error reading from /dev/random");
-		if (ret > 0)
-			n += ret;
-
-		struct timespec now;
-		clock_gettime(CLOCK_MONOTONIC, &now);
-
-		now.tv_sec	-= start.tv_sec;
-		now.tv_nsec	-= start.tv_nsec;
-
-		while (now.tv_nsec < 0) {
-			long nsec_per_sec = 1000 * 1000 * 1000;
-			long sec = now.tv_nsec / nsec_per_sec - 1;
-			now.tv_nsec	-= sec * nsec_per_sec;
-			now.tv_sec	+= sec;
-		}
-
-		if (!printed && now.tv_sec >= 3) {
-			printf("Reading from /dev/random is taking a long time...\n)");
-			printed = true;
-		}
-	}
-	close(fd);
-#endif
+	memzero_explicit(&disk_key, sizeof(disk_key));
+	memzero_explicit(&key, sizeof(key));
 }

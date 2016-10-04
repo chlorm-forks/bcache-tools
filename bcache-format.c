@@ -216,7 +216,7 @@ int cmd_format(int argc, char *argv[])
 			break;
 		case Opt_tier:
 		case 't':
-			tier = strtoul_or_die(optarg, CACHE_TIERS, "tier");
+			tier = strtoul_or_die(optarg, BCH_TIER_MAX, "tier");
 			break;
 		case Opt_discard:
 			discard = true;
@@ -243,19 +243,21 @@ int cmd_format(int argc, char *argv[])
 		uuid_generate(uuid.b);
 
 	if (encrypted) {
-		char *pass2;
-
 		passphrase = read_passphrase("Enter passphrase: ");
-		pass2 = read_passphrase("Enter same passphrase again: ");
 
-		if (strcmp(passphrase, pass2)) {
-			memzero_explicit(passphrase, strlen(passphrase));
+		if (isatty(STDIN_FILENO)) {
+			char *pass2 =
+				read_passphrase("Enter same passphrase again: ");
+
+			if (strcmp(passphrase, pass2)) {
+				memzero_explicit(passphrase, strlen(passphrase));
+				memzero_explicit(pass2, strlen(pass2));
+				die("Passphrases do not match");
+			}
+
 			memzero_explicit(pass2, strlen(pass2));
-			die("Passphrases do not match");
+			free(pass2);
 		}
-
-		memzero_explicit(pass2, strlen(pass2));
-		free(pass2);
 	}
 
 	darray_foreach(dev, devices)

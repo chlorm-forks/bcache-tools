@@ -11,7 +11,8 @@ int cmd_unlock(int argc, char *argv[])
 {
 	struct bcache_disk_key disk_key;
 	struct bcache_key key;
-	struct cache_sb *sb;
+	struct bch_sb *sb;
+	struct bch_sb_field_crypt *crypt;
 	char *passphrase;
 	char uuid[40];
 	char description[60];
@@ -21,20 +22,23 @@ int cmd_unlock(int argc, char *argv[])
 
 	sb = bcache_super_read(argv[1]);
 
-	if (!CACHE_SET_ENCRYPTION_KEY(sb))
+	crypt = (void *) bch_sb_field_get(sb, BCH_SB_FIELD_crypt);
+	if (!crypt)
 		die("filesystem is not encrypted");
 
-	memcpy(&disk_key, sb->encryption_key, sizeof(disk_key));
+	memcpy(&disk_key, crypt->encryption_key,
+	       sizeof(crypt->encryption_key));
 
-	if (!memcmp(&disk_key, bch_key_header, sizeof(bch_key_header)))
+	if (!disk_key_is_encrypted(&disk_key))
 		die("filesystem does not have encryption key");
 
 	passphrase = read_passphrase("Enter passphrase: ");
 
-	derive_passphrase(&key, passphrase);
-	disk_key_encrypt(sb, &disk_key, &key);
+	derive_passphrase(crypt, &key, passphrase);
 
-	if (memcmp(&disk_key, bch_key_header, sizeof(bch_key_header)))
+	/* Check if the user supplied the correct passphrase: */
+	disk_key_encrypt(sb, &disk_key, &key);
+	if (disk_key_is_encrypted(&disk_key))
 		die("incorrect passphrase");
 
 	uuid_unparse_lower(sb->user_uuid.b, uuid);
